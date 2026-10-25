@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: inventum
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}
+      POSTGRES_DB: inventum
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Порт открыт только на localhost (для разработки и psql); из интернета база недоступна
+    ports:
+      - '127.0.0.1:${DB_PORT:-5432}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U inventum -d inventum']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://inventum:${POSTGRES_PASSWORD}@db:5432/inventum
+      OWNER_EMAIL: ${OWNER_EMAIL:-owner@inventum.uz}
+      OWNER_PASSWORD: ${OWNER_PASSWORD:-}
+      # Cloudflare R2 (фото учеников). Без этих переменных фото хранятся в томе uploads — только для проб.
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-}
+      UPLOADS_DIR: /app/uploads
+      # За HTTPS-прокси (Caddy, Cloudflare Tunnel, nginx): COOKIE_SECURE=1 и TRUST_PROXY=1
+      COOKIE_SECURE: ${COOKIE_SECURE:-0}
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+    volumes:
+      - uploads:/app/uploads
+    ports:
+      - '${API_PORT:-3001}:3001'
+
+volumes:
+  pgdata:
+  uploads:

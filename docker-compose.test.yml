@@ -1,0 +1,13 @@
+# Одноразовая база для тестов: данные в памяти, порт только на localhost.
+# ВНИМАНИЕ: тесты стирают схему public — используйте только эту базу.
+services:
+  testdb:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: inventum
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: inventum_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    ports:
+      - '127.0.0.1:5441:5432'
