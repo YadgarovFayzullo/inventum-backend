@@ -212,6 +212,40 @@ describe('API', () => {
     assert.equal((await app.inject({ method: 'GET', url: '/api/students/s1/photo', headers: { cookie: manager.cookie } })).statusCode, 404)
   })
 
+  it('владелец меняет роль, почту и привязку; защита владельцев', async () => {
+    const users = (await call(owner, 'GET', '/api/users')).body
+    const mgr = users.find((u: any) => u.email === 'manager@test.uz')
+    assert.equal((await call(owner, 'PATCH', `/api/users/${mgr.id}`, {})).status, 400, 'пустое изменение')
+    // менеджер → преподаватель (нужен teacherId)
+    assert.equal((await call(owner, 'PATCH', `/api/users/${mgr.id}`, { role: 'teacher' })).status, 400)
+    const asT = await call(owner, 'PATCH', `/api/users/${mgr.id}`, { role: 'teacher', teacherId: 't1' })
+    assert.equal(asT.status, 200)
+    assert.equal(asT.body.role, 'teacher')
+    assert.equal(asT.body.teacherId, 't1')
+    // роль действует сразу, без повторного входа: менеджерские права пропали
+    assert.equal((await call(manager, 'GET', '/api/bootstrap')).body.payments.length, 0)
+    assert.equal((await call(manager, 'POST', '/api/payments', {})).status, 403)
+    // обратно в менеджера, меняем почту
+    const back = await call(owner, 'PATCH', `/api/users/${mgr.id}`, { role: 'manager', email: 'Manager2@test.uz' })
+    assert.equal(back.body.role, 'manager')
+    assert.equal(back.body.teacherId, '')
+    assert.equal(back.body.email, 'manager2@test.uz')
+    assert.equal((await call(owner, 'PATCH', `/api/users/${mgr.id}`, { email: 'owner@test.uz' })).status, 409, 'почта занята')
+    manager = await login('manager2@test.uz', 'manager-pass-1')
+    // защита: нельзя понизить себя / последнего владельца
+    assert.equal((await call(owner, 'PATCH', '/api/users/u-owner', { role: 'manager' })).status, 400)
+    // второй владелец появляется — тогда понижение возможно, но не себя
+    const second = await call(owner, 'POST', '/api/users', { email: 'second@test.uz', password: 'second-pass-1', role: 'owner' })
+    assert.equal(second.status, 200)
+    const owner2 = await login('second@test.uz', 'second-pass-1')
+    assert.equal((await call(owner, 'PATCH', `/api/users/${second.body.id}`, { role: 'manager' })).status, 200, 'можно понизить другого владельца')
+    assert.equal((await call(owner2, 'GET', '/api/users')).status, 403, 'понижённый сразу теряет права')
+    // смена собственного пароля не выкидывает из текущей сессии
+    assert.equal((await call(owner, 'PATCH', '/api/users/u-owner', { password: 'owner-pass-2' })).status, 200)
+    assert.equal((await call(owner, 'GET', '/api/auth/me')).body.user.role, 'owner')
+    owner = await login('owner@test.uz', 'owner-pass-2')
+  })
+
   it('смена пароля завершает старые сессии; нельзя удалить себя', async () => {
     const users = (await call(owner, 'GET', '/api/users')).body
     const t1 = users.find((u: any) => u.email === 't1@test.uz')
@@ -241,7 +275,7 @@ describe('API', () => {
     for (let i = 0; i < 7; i++) last = (await call(null, 'POST', '/api/auth/login', { email: 'victim@test.uz', password: `wrong${i}` })).status
     assert.equal(last, 429)
     // верный вход под другим email не блокируется
-    assert.equal((await call(null, 'POST', '/api/auth/login', { email: 'owner@test.uz', password: 'owner-pass-1' })).status, 200)
+    assert.equal((await call(null, 'POST', '/api/auth/login', { email: 'owner@test.uz', password: 'owner-pass-2' })).status, 200)
   })
 
   it('удаление группы каскадно чистит записи и посещаемость', async () => {

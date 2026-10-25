@@ -10,7 +10,7 @@ import type { Course, Enrollment, Group, Lead, Payment, Student, Teacher, Transf
 import type { Sql } from './db'
 import * as S from './schemas'
 import {
-  createSession, destroySession, DUMMY_HASH, findSession, hashPassword, LoginLimiter, purgeExpiredSessions,
+  createSession, destroyOtherSessions, destroySession, DUMMY_HASH, findSession, hashPassword, LoginLimiter, purgeExpiredSessions,
   SESSION_COOKIE, verifyPassword, type SessionUser,
 } from './security'
 import { sniffImage, type Storage } from './storage'
@@ -470,11 +470,39 @@ export function buildApp({ sql, storage, staticDir, secureCookie = false, logger
 
   app.patch('/api/users/:id', { preHandler: owner }, async (req, reply) => {
     const { id } = z.object({ id: z.string().min(1).max(60) }).parse(req.params)
-    const b = z.object({ password: S.password }).parse(req.body)
-    const r = await sql`UPDATE users SET password_hash = ${await hashPassword(b.password)} WHERE id = ${id}`
-    if (r.count === 0) return reply.code(404).send({ error: 'Пользователь не найден' })
-    await sql`DELETE FROM sessions WHERE user_id = ${id}` // после смены пароля старые входы недействительны
-    return ok
+    const b = z
+      .object({ email: S.email, password: S.password, role: S.role, teacherId: S.id, name: z.string().trim().min(1).max(80) })
+      .partial()
+      .refine((v) => Object.keys(v).length > 0, 'Нечего менять')
+      .parse(req.body)
+    const [cur] = await sql`SELECT * FROM users WHERE id = ${id}`
+    if (!cur) return reply.code(404).send({ error: 'Пользователь не найден' })
+
+    const role = b.role ?? (cur.role as Role)
+    if (b.role && b.role !== cur.role && cur.role === 'owner') {
+      if (id === req.user!.id) return reply.code(400).send({ error: 'Нельзя понизить самого себя' })
+      const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM users WHERE role = 'owner'`
+      if (n <= 1) return reply.code(400).send({ error: 'Нельзя убрать последнего владельца' })
+    }
+
+    // Преподаватель обязан быть привязан к записи преподавателя; у остальных привязки нет
+    let teacherId: string | null = role === 'teacher' ? (b.teacherId ?? cur.teacher_id) : null
+    let name: string = b.name ?? cur.name
+    if (role === 'teacher') {
+      const [t] = teacherId ? await sql`SELECT first_name, last_name FROM teachers WHERE id = ${teacherId}` : []
+      if (!t) return reply.code(400).send({ error: 'Выберите преподавателя' })
+      if (b.teacherId || b.role) name = `${t.first_name} ${t.last_name}`
+    } else {
+      teacherId = null
+      if (b.role && !b.name) name = role === 'owner' ? 'Владелец' : 'Менеджер'
+    }
+
+    await sql`UPDATE users SET email = ${b.email ?? cur.email}, role = ${role}, teacher_id = ${teacherId}, name = ${name},
+      password_hash = ${b.password ? await hashPassword(b.password) : cur.password_hash} WHERE id = ${id}`
+    // После смены пароля старые входы недействительны (кроме текущего, если владелец меняет свой пароль)
+    if (b.password) await destroyOtherSessions(sql, id, id === req.user!.id ? req.sessionToken : null)
+    const [row] = await sql`SELECT * FROM users WHERE id = ${id}`
+    return userDto(row)
   })
 
   app.delete('/api/users/:id', { preHandler: owner }, async (req, reply) => {

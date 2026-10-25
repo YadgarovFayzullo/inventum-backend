@@ -50,6 +50,11 @@ export async function findSession(sql: Sql, token: string): Promise<SessionUser 
   return { id: row.id, email: row.email, role: row.role, name: row.name, teacherId: row.teacherId ?? '' }
 }
 
+/** Завершить все сессии пользователя, кроме текущей (нужна, когда владелец меняет собственный пароль) */
+export async function destroyOtherSessions(sql: Sql, userId: string, keepToken: string | null) {
+  await sql`DELETE FROM sessions WHERE user_id = ${userId} AND token_hash <> ${keepToken ? sha256(keepToken) : ''}`
+}
+
 export async function destroySession(sql: Sql, token: string) {
   await sql`DELETE FROM sessions WHERE token_hash = ${sha256(token)}`
 }
